@@ -528,6 +528,7 @@ bool BurstCollectorService::downloadSessionFiles(
     std::string local_dir = local_base_dir + "/" + session.date_folder;
     std::filesystem::create_directories(local_dir);
 
+    checkpoints_missed_.clear();
     int downloaded = 0;
     int range_downloads = 0;
     int full_downloads = 0;
@@ -540,7 +541,7 @@ bool BurstCollectorService::downloadSessionFiles(
     // 0, so a big BRP on such a link might never finish. A ranged transfer that
     // fails now keeps its bytes and the next burst resumes from them. Only a
     // server that does not honour Range (the client turns supportsRange off)
-    // falls back to a full download, and only then is the copy discarded.
+    // falls back to a full download, which replaces the copy once it lands.
     auto smartDownload = [&](const std::string& filename, const std::string& local_path) -> bool {
         bool file_exists = std::filesystem::exists(local_path);
         size_t existing_size = file_exists ? std::filesystem::file_size(local_path) : 0;
@@ -589,7 +590,6 @@ bool BurstCollectorService::downloadSessionFiles(
             }
 
             std::cerr << "⚠️  Range not honoured for " << filename << ", trying full download..." << std::endl;
-            std::filesystem::remove(local_path);
         }
 
         // Full download (new file, Range not supported, or Range fallback)
@@ -663,8 +663,10 @@ bool BurstCollectorService::downloadSessionFiles(
             // in a row waits an hour.
             const std::string file_key = session.date_folder + "/" + filename;
             if (const auto parked = file_parked_until_.find(file_key);
-                parked != file_parked_until_.end() && parked->second > nowSeconds())
+                parked != file_parked_until_.end() && parked->second > nowSeconds()) {
+                checkpoints_missed_.insert(filename);
                 continue;
+            }
             // D6: never ask at or past the end. A copy we hold is asked for
             // more only when the listing is a full KB larger, whatever its
             // stamp (an unstamped copy used to be ranged from its size blind).
@@ -691,6 +693,7 @@ bool BurstCollectorService::downloadSessionFiles(
                 if (on_checkpoint_stored) on_checkpoint_stored();
             } else {
                 std::cerr << "⚠️  CPAP: Failed to download " << label << ": " << filename << std::endl;
+                checkpoints_missed_.insert(filename);
                 if (++file_failures_[file_key] >= kFailuresBeforePark) {
                     file_parked_until_[file_key] =
                         nowSeconds() + std::chrono::duration_cast<std::chrono::seconds>(kParkFor).count();
@@ -2591,7 +2594,7 @@ bool BurstCollectorService::executeBurstCycle() {
                         if (filename.find("_BRP.edf") != std::string::npos ||
                             filename.find("_PLD.edf") != std::string::npos ||
                             isOximetryFile(filename)) {
-                            checkpoint_sizes[filename] = size_kb;
+                            if (!checkpoints_missed_.count(filename)) checkpoint_sizes[filename] = size_kb;
                         }
                     }
                     db_service_->updateCheckpointFileSizes(device_id_, session.session_start, checkpoint_sizes);
@@ -2704,7 +2707,7 @@ bool BurstCollectorService::executeBurstCycle() {
                     if (filename.find("_BRP.edf") != std::string::npos ||
                         filename.find("_PLD.edf") != std::string::npos ||
                         isOximetryFile(filename)) {
-                        checkpoint_sizes[filename] = size_kb;
+                        if (!checkpoints_missed_.count(filename)) checkpoint_sizes[filename] = size_kb;
                     }
                 }
                 db_service_->updateCheckpointFileSizes(device_id_, session.session_start, checkpoint_sizes);
