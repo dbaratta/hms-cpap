@@ -56,7 +56,7 @@ COPY llm_prompt.txt ./
 # Build HMS-CPAP with Web UI support
 RUN mkdir build && cd build && \
     cmake -DBUILD_TESTS=OFF -DBUILD_WITH_WEB=ON -DBUILD_WITH_MYSQL=ON .. && \
-    make -j$(nproc) && \
+    make -j2 && \
     strip hms_cpap
 
 # =============================================================================
